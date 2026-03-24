@@ -1,0 +1,8 @@
+.env
+config.json
+config.json.bak
+
+.DS_Store
+.idea/
+.vscode/
+*.swp

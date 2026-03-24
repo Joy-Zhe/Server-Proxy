@@ -1,0 +1,56 @@
+services:
+  # 模板文件服务 - 供 sing-box-subscribe 获取配置模板
+  template-server:
+    image: nginx:alpine
+    container_name: proxy-template-server
+    restart: unless-stopped
+    volumes:
+      - ./config_template.example.json:/usr/share/nginx/html/config_template.json:ro
+    ports:
+      - "8080:80"
+    networks:
+      - proxy-net
+
+  # Clash 订阅转 sing-box 配置
+  sing-box-subscribe:
+    build:
+      context: .
+      dockerfile: Dockerfile.subscribe
+      network: host
+    container_name: sing-box-subscribe
+    restart: unless-stopped
+    depends_on:
+      - template-server
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "5000:5000"
+    networks:
+      - proxy-net
+
+  # sing-box 代理核心
+  sing-box:
+    image: ghcr.io/sagernet/sing-box:v1.11.14
+    container_name: sing-box
+    restart: unless-stopped
+    depends_on:
+      - sing-box-subscribe
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    environment:
+      ENABLE_DEPRECATED_LEGACY_DNS_SERVERS: "true"
+      ENABLE_DEPRECATED_OUTBOUND_DNS_RULE_ITEM: "true"
+    volumes:
+      - ./config.json:/etc/sing-box/config.json
+    command: run -c /etc/sing-box/config.json
+
+networks:
+  proxy-net:
+    driver: bridge

@@ -1,0 +1,30 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    SING_BOX_SUBSCRIBE_REF=main
+
+WORKDIR /app
+
+# Avoid apt mirrors during image build by downloading the repo archive directly.
+RUN python - <<'PY'
+import io
+import os
+import urllib.request
+import zipfile
+
+ref = os.environ["SING_BOX_SUBSCRIBE_REF"]
+url = f"https://codeload.github.com/Toperlock/sing-box-subscribe/zip/refs/heads/{ref}"
+with urllib.request.urlopen(url, timeout=60) as response:
+    archive = response.read()
+
+with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+    root = zipped.namelist()[0].split("/")[0]
+    zipped.extractall("/tmp")
+
+os.system(f"cp -a /tmp/{root}/. /app/")
+PY
+
+RUN pip install --no-cache-dir -r requirements.txt waitress
+
+EXPOSE 5000
+CMD ["waitress-serve", "--host=0.0.0.0", "--port=5000", "api.app:app"]
