@@ -27,6 +27,84 @@ TUN_IPV4_CIDR="${TUN_IPV4_CIDR:-172.19.0.1/30}"
 TUN_IPV6_CIDR="${TUN_IPV6_CIDR:-fdfe:dcba:9876::1/126}"
 TUN_MTU="${TUN_MTU:-1500}"
 TUN_AUTO_REDIRECT="${TUN_AUTO_REDIRECT:-false}"
+DIRECT_FALLBACK_USED=false
+
+generate_direct_config() {
+    python3 - <<'PY'
+import json
+import os
+
+run_mode = os.environ.get('RUN_MODE', 'tun').lower()
+enable_local_proxy = os.environ.get('ENABLE_LOCAL_PROXY', 'true').lower() in ('1', 'true', 'yes', 'on')
+http_port = int(os.environ.get('LOCAL_HTTP_PORT', '7897'))
+socks_port = int(os.environ.get('LOCAL_SOCKS_PORT', '7891'))
+clash_api_host = os.environ.get('CLASH_API_HOST', '0.0.0.0:9090')
+clash_api_secret = os.environ.get('CLASH_API_SECRET', '')
+tun_interface = os.environ.get('TUN_INTERFACE_NAME', 'sb-tun')
+tun_ipv4 = os.environ.get('TUN_IPV4_CIDR', '172.19.0.1/30')
+tun_ipv6 = os.environ.get('TUN_IPV6_CIDR', 'fdfe:dcba:9876::1/126')
+tun_mtu = int(os.environ.get('TUN_MTU', '1500'))
+tun_auto_redirect = os.environ.get('TUN_AUTO_REDIRECT', 'false').lower() in ('1', 'true', 'yes', 'on')
+
+inbounds = []
+if run_mode == 'tun':
+    inbounds.append({
+        'type': 'tun',
+        'tag': 'tun-in',
+        'interface_name': tun_interface,
+        'address': [tun_ipv4, tun_ipv6],
+        'stack': 'system',
+        'mtu': tun_mtu,
+        'auto_route': True,
+        'auto_redirect': tun_auto_redirect,
+        'strict_route': True,
+        'sniff': True,
+        'sniff_override_destination': True,
+    })
+
+if enable_local_proxy:
+    inbounds.extend([
+        {'type': 'http', 'tag': 'http-in', 'listen': '127.0.0.1', 'listen_port': http_port},
+        {'type': 'socks', 'tag': 'socks-in', 'listen': '127.0.0.1', 'listen_port': socks_port},
+    ])
+
+config = {
+    'log': {'level': 'info', 'timestamp': True},
+    'dns': {
+        'servers': [
+            {'tag': 'localDnsPrimary', 'address': '10.10.0.21', 'detour': 'direct'},
+            {'tag': 'localDnsSecondary', 'address': '10.10.2.21', 'detour': 'direct'},
+        ],
+        'final': 'localDnsPrimary',
+        'strategy': 'ipv4_only',
+    },
+    'inbounds': inbounds,
+    'outbounds': [
+        {'tag': 'proxy', 'type': 'selector', 'outbounds': ['direct']},
+        {'type': 'direct', 'tag': 'direct'},
+        {'type': 'block', 'tag': 'block'},
+    ],
+    'route': {
+        'auto_detect_interface': True,
+        'final': 'direct',
+        'rules': [
+            {'geoip': ['private'], 'outbound': 'direct'},
+        ],
+    },
+    'experimental': {
+        'clash_api': {
+            'external_controller': clash_api_host,
+            'secret': clash_api_secret,
+            'external_ui': 'ui',
+            'external_ui_download_url': 'https://github.com/MetaCubeX/metacubexd/archive/refs/heads/gh-pages.zip',
+            'default_mode': 'rule',
+        }
+    },
+}
+
+print(json.dumps(config, indent=2, ensure_ascii=False))
+PY
+}
 
 if [ -z "$SUBSCRIPTION_URL" ]; then
     echo "错误: 请提供 Clash 订阅 URL"
@@ -68,15 +146,17 @@ if [ -z "$CONFIG_JSON" ] || echo "$CONFIG_JSON" | grep -q '"status".*"error"'; t
 fi
 
 if [ -z "$CONFIG_JSON" ] || echo "$CONFIG_JSON" | grep -q '"status".*"error"'; then
-    echo "错误: 无法获取订阅配置"
+    echo "警告: 无法获取订阅配置，将生成直连配置作为回退"
     echo "请检查: 1) 订阅 URL 是否正确  2) docker compose up -d 是否已启动"
-    exit 1
+    FINAL_CONFIG="$(generate_direct_config)"
+    DIRECT_FALLBACK_USED=true
 fi
 
 # 按运行模式整理 inbounds:
 # - tun: 为宿主机提供 TUN 全局代理，并可保留本地 HTTP/SOCKS 入口
 # - proxy: 仅保留本地 HTTP/SOCKS 入口
-FINAL_CONFIG=$(echo "$CONFIG_JSON" | python3 -c "
+if [ "$DIRECT_FALLBACK_USED" != true ]; then
+    FINAL_CONFIG=$(echo "$CONFIG_JSON" | python3 -c "
 import json, os, sys
 d = json.load(sys.stdin)
 
@@ -202,6 +282,7 @@ clash_api.setdefault('external_ui_download_url', 'https://github.com/MetaCubeX/m
 clash_api.setdefault('default_mode', 'rule')
 print(json.dumps(d, indent=2, ensure_ascii=False))
 " 2>/dev/null || echo "$CONFIG_JSON")
+fi
 
 [ -f config.json ] && cp config.json config.json.bak
 echo "$FINAL_CONFIG" > config.json
@@ -212,7 +293,7 @@ if ! python3 -c "import json; json.load(open('config.json'))" 2>/dev/null; then
     exit 1
 fi
 
-if ! python3 - <<'PY'
+if [ "$DIRECT_FALLBACK_USED" != true ] && ! python3 - <<'PY'
 import json
 import sys
 
@@ -231,10 +312,17 @@ if not real_nodes:
     sys.exit(1)
 PY
 then
-    echo "错误: 当前订阅没有成功生成任何代理节点，已恢复备份"
+    echo "警告: 当前订阅没有成功生成任何代理节点，将切换为直连配置"
     echo "请检查订阅链接是否可用，或返回内容是否为有效的 Clash/Mihomo 订阅"
-    [ -f config.json.bak ] && mv config.json.bak config.json
-    exit 1
+    FINAL_CONFIG="$(generate_direct_config)"
+    echo "$FINAL_CONFIG" > config.json
+    DIRECT_FALLBACK_USED=true
+
+    if ! python3 -c "import json; json.load(open('config.json'))" 2>/dev/null; then
+        echo "错误: 直连回退配置 JSON 无效，已恢复备份"
+        [ -f config.json.bak ] && mv config.json.bak config.json
+        exit 1
+    fi
 fi
 
 docker restart sing-box 2>/dev/null || true
@@ -250,5 +338,8 @@ echo "Web UI: http://127.0.0.1:${CLASH_API_PORT}/ui/"
 echo "Clash API: http://127.0.0.1:${CLASH_API_PORT}"
 if [ -n "$CLASH_API_SECRET" ]; then
     echo "UI 如提示密钥，请填写 .env 中的 CLASH_API_SECRET"
+fi
+if [ "$DIRECT_FALLBACK_USED" = true ]; then
+    echo "说明: 当前没有可用代理节点，已生成直连配置，所有出站流量会走 direct。"
 fi
 echo "说明: 当前仓库会把订阅展开成 sing-box outbounds，MetaCubeXD 的节点列表显示在 Proxies 页面，Providers 页面为空是正常现象。"
