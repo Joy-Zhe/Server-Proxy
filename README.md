@@ -84,11 +84,15 @@ chmod +x setup-cron.sh
 
 这套配置启用了 `Clash API + MetaCubeXD` 图形界面。
 
-- 本机访问: `http://127.0.0.1:9090/ui/`
-- 局域网访问: `http://<服务器局域网IP>:9090/ui/`
-- 后端地址: `http://<服务器局域网IP>:9090`
+- 默认本机访问: `http://127.0.0.1:9090/ui/`
+- 默认局域网访问: `http://<服务器局域网IP>:9090/ui/`
+- 默认后端地址: `http://<服务器局域网IP>:9090`
+
+如果你把 `.env` 里的 `CLASH_API_HOST` 改成了别的端口，比如 `0.0.0.0:9091`，那 UI 和后端地址也要同步改成 `9091`。
 
 如果 UI 页面要求填写密钥，使用 `.env` 中的 `CLASH_API_SECRET`。
+
+MetaCubeXD 中的订阅节点会显示在 `Proxies` 页面；当前仓库会把订阅转换结果直接展开为 sing-box `outbounds`，所以 `Providers` 页面为空属于正常现象，不代表订阅拉取失败。
 
 修改 `CLASH_API_SECRET` 或 `CLASH_API_HOST` 后，重新执行：
 

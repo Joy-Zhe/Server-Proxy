@@ -26,5 +26,46 @@ PY
 
 RUN pip install --no-cache-dir -r requirements.txt waitress
 
+# Patch get_nodes() to handle Clash YAML decoded from sub:// correctly.
+# Without this fix, urlparse() mistakes "mixed-port:" as a URL scheme and
+# tries to fetch the YAML string as if it were a URL, causing 10 retries.
+RUN python3 - <<'PATCH'
+with open('/app/main.py', 'r') as f:
+    src = f.read()
+
+old = """\
+    if url.startswith('sub://'):
+        url = tool.b64Decode(url[6:]).decode('utf-8')
+    urlstr = urlparse(url)"""
+
+new = """\
+    if url.startswith('sub://'):
+        decoded = tool.b64Decode(url[6:]).decode('utf-8')
+        if '\\n' in decoded and 'proxies:' in decoded:
+            import yaml
+            try:
+                yaml_content = yaml.safe_load(decoded)
+                if isinstance(yaml_content, dict) and 'proxies' in yaml_content:
+                    share_links = [clash2v2ray(p) for p in yaml_content['proxies']]
+                    data = parse_content('\\n'.join(l for l in share_links if l))
+                    result = []
+                    for item in data:
+                        if isinstance(item, tuple):
+                            result.extend([item[0], item[1]])
+                        else:
+                            result.append(item)
+                    return result
+            except Exception as e:
+                print(f'sub:// YAML parse error: {e}')
+        url = decoded
+    urlstr = urlparse(url)"""
+
+assert old in src, "Patch target not found in main.py"
+src = src.replace(old, new)
+with open('/app/main.py', 'w') as f:
+    f.write(src)
+print("Patched get_nodes() successfully")
+PATCH
+
 EXPOSE 5000
 CMD ["waitress-serve", "--host=0.0.0.0", "--port=5000", "api.app:app"]

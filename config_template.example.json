@@ -3,6 +3,47 @@
     "level": "info",
     "timestamp": true
   },
+  "dns": {
+    "servers": [
+      {
+        "tag": "proxyDns",
+        "address": "tls://8.8.8.8",
+        "detour": "proxy"
+      },
+      {
+        "tag": "localDnsPrimary",
+        "address": "10.10.0.21",
+        "detour": "direct"
+      },
+      {
+        "tag": "localDnsSecondary",
+        "address": "10.10.2.21",
+        "detour": "direct"
+      }
+    ],
+    "rules": [
+      {
+        "domain_suffix": [
+          "chatgpt.com",
+          "openai.com",
+          "oaistatic.com",
+          "google.com",
+          "gstatic.com",
+          "googleapis.com",
+          "googleusercontent.com",
+          "github.com",
+          "githubusercontent.com",
+          "githubassets.com",
+          "githubstatus.com",
+          "github.io",
+          "cursor.sh"
+        ],
+        "server": "proxyDns"
+      }
+    ],
+    "final": "localDnsPrimary",
+    "strategy": "ipv4_only"
+  },
   "inbounds": [
     {
       "type": "tun",
@@ -46,8 +87,26 @@
   ],
   "route": {
     "auto_detect_interface": true,
-    "final": "proxy",
+    "final": "direct",
     "rules": [
+      {
+        "domain_suffix": [
+          "chatgpt.com",
+          "openai.com",
+          "oaistatic.com",
+          "google.com",
+          "gstatic.com",
+          "googleapis.com",
+          "googleusercontent.com",
+          "github.com",
+          "githubusercontent.com",
+          "githubassets.com",
+          "githubstatus.com",
+          "github.io",
+          "cursor.sh"
+        ],
+        "outbound": "proxy"
+      },
       {
         "geoip": ["private"],
         "outbound": "direct"

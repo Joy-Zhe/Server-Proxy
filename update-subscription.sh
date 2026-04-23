@@ -38,9 +38,10 @@ fi
 # 订阅站可能拦截默认 Python/requests 请求头，优先在宿主机侧抓取原始 base64 订阅，
 # 再通过 sub:// 直接交给 sing-box-subscribe 解析，避免容器二次请求被 403/402 拒绝。
 SUBSCRIPTION_SOURCE="$SUBSCRIPTION_URL"
-RAW_SUBSCRIPTION=$(curl -fsSL -A "$SUBSCRIPTION_UA" --connect-timeout 30 --max-time 90 "$SUBSCRIPTION_URL" 2>/dev/null | tr -d '\r\n' || true)
+RAW_SUBSCRIPTION=$(curl -fsSL --noproxy '*' -A "$SUBSCRIPTION_UA" --connect-timeout 30 --max-time 90 "$SUBSCRIPTION_URL" 2>/dev/null || true)
 if [ -n "$RAW_SUBSCRIPTION" ]; then
-    SUBSCRIPTION_SOURCE="sub://$RAW_SUBSCRIPTION"
+    B64_SUBSCRIPTION=$(echo -n "$RAW_SUBSCRIPTION" | base64 -w0)
+    SUBSCRIPTION_SOURCE="sub://$B64_SUBSCRIPTION"
 fi
 
 # sing-box-subscribe 服务地址 (本机端口映射)
@@ -157,7 +158,42 @@ if enable_local_proxy and not has_socks:
 
 d['inbounds'] = new_inbounds
 d.setdefault('log', {})['level'] = 'info'
-d.setdefault('route', {})['auto_detect_interface'] = True
+proxy_suffixes = [
+    'chatgpt.com',
+    'openai.com',
+    'oaistatic.com',
+    'google.com',
+    'gstatic.com',
+    'googleapis.com',
+    'googleusercontent.com',
+    'github.com',
+    'githubusercontent.com',
+    'githubassets.com',
+    'githubstatus.com',
+    'github.io',
+    'cursor.sh',
+]
+
+dns = d.setdefault('dns', {})
+dns['servers'] = [
+    {'tag': 'proxyDns', 'address': 'tls://8.8.8.8', 'detour': 'proxy'},
+    {'tag': 'localDnsPrimary', 'address': '10.10.0.21', 'detour': 'direct'},
+    {'tag': 'localDnsSecondary', 'address': '10.10.2.21', 'detour': 'direct'},
+]
+existing_dns_rules = dns.get('rules', [])
+dns['rules'] = [{'domain_suffix': proxy_suffixes, 'server': 'proxyDns'}]
+for rule in existing_dns_rules:
+    if rule not in dns['rules']:
+        dns['rules'].append(rule)
+dns['final'] = 'localDnsPrimary'
+dns['strategy'] = 'ipv4_only'
+
+route = d.setdefault('route', {})
+route['auto_detect_interface'] = True
+route['final'] = 'direct'
+existing_route_rules = route.get('rules', [])
+route['rules'] = [{'domain_suffix': proxy_suffixes, 'outbound': 'proxy'}] + existing_route_rules
+
 clash_api = d.setdefault('experimental', {}).setdefault('clash_api', {})
 clash_api['external_controller'] = clash_api_host
 clash_api['secret'] = clash_api_secret
@@ -202,4 +238,17 @@ then
 fi
 
 docker restart sing-box 2>/dev/null || true
+CLASH_API_PORT="${CLASH_API_HOST##*:}"
+docker exec sing-box sh -lc "if [ -d /ui ]; then cat > /ui/config.js <<'EOF'
+window.__METACUBEXD_CONFIG__ = {
+  defaultBackendURL: window.location.origin,
+}
+EOF
+fi" 2>/dev/null || true
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 订阅更新完成! 模式: ${RUN_MODE}, 本地 HTTP: ${LOCAL_HTTP_PORT}, 本地 SOCKS5: ${LOCAL_SOCKS_PORT}"
+echo "Web UI: http://127.0.0.1:${CLASH_API_PORT}/ui/"
+echo "Clash API: http://127.0.0.1:${CLASH_API_PORT}"
+if [ -n "$CLASH_API_SECRET" ]; then
+    echo "UI 如提示密钥，请填写 .env 中的 CLASH_API_SECRET"
+fi
+echo "说明: 当前仓库会把订阅展开成 sing-box outbounds，MetaCubeXD 的节点列表显示在 Proxies 页面，Providers 页面为空是正常现象。"
